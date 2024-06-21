@@ -20,7 +20,8 @@
   },
   "include": [
     "package.json",
-    "src/**/*"
+    "src/**/*",
+    "lib/**/*"
   ],
   "exclude": [
     "node_modules",
