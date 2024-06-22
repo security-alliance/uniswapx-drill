@@ -42,7 +42,6 @@ type OrderExecution = {
   fillData: string
 }
 
-
 type Options = {
   l1RpcProvider: Provider
   mnemonic: string
@@ -90,7 +89,7 @@ type State = {
   erc20TokenA: ERC20Contract
   erc20TokenB: ERC20Contract
   orders: Map<ORDER_STATUS, Map<string, Order>>
-  pendingOrders: Set<string>
+  filledOrders: Set<string>
 }
 
 const MAX_UINT256 = BigNumber.from(2).pow(256).sub(1)
@@ -141,7 +140,7 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
         },
         faucetErc20TxAmount: {
           validator: validators.str,
-          default: '100',
+          default: '500',
           desc: 'Amount of ERC20 to request from the faucet',
         },
         testChainId: {
@@ -252,7 +251,7 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
     this.state.orders.set(ORDER_STATUS.CANCELLED, new Map())
     this.state.orders.set(ORDER_STATUS.FILLED, new Map())
     this.state.orders.set(ORDER_STATUS.INSUFFICIENT_FUNDS, new Map())
-    this.state.pendingOrders = new Set()
+    this.state.filledOrders = new Set()
   }
 
   // K8s healthcheck
@@ -301,29 +300,46 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
     }
   }
 
+  private async getOrderStatus(orderHash: string): Promise<ORDER_STATUS> {
+    const orders = await axios.get<GetOrdersResponse<UniswapXOrderEntity>>(
+      `${this.options.uniswapXServiceUrl}dutch-auction/orders?orderHash=${orderHash}`
+    )
+    if (orders.data.orders.length === 0) {
+      this.logger.error(`Order ${orderHash} not found`)
+      return ORDER_STATUS.ERROR
+    }
+    this.logger.info(
+      `Order ${orderHash} status: ${orders.data.orders[0].orderStatus}`
+    )
+    return orders.data.orders[0].orderStatus
+  }
 
   private async trackOrders(): Promise<void> {
-    const orders = await axios.get<GetOrdersResponse<UniswapXOrderEntity>>(
+    // Track prev open orders
+    const existingOrders = this.state.orders.get(ORDER_STATUS.OPEN)
+    for (const [orderHash, _order] of existingOrders.entries()) {
+      const orderStatus = await this.getOrderStatus(orderHash)
+      if (orderStatus !== ORDER_STATUS.OPEN) {
+        this.state.orders.get(ORDER_STATUS.OPEN)?.delete(orderHash)
+      }
+    }
+
+    // Get new open orders
+    const openOrders = await axios.get<GetOrdersResponse<UniswapXOrderEntity>>(
       `${this.options.uniswapXServiceUrl}dutch-auction/orders?chainId=${this.options.testChainId}&orderStatus=open`
     )
-    console.log(`Tracking ${orders.data.orders.length} orders`)
-    for (const order of orders.data.orders) {
-      
+    console.log(`Tracking ${openOrders.data.orders.length} orders`)
+    for (const order of openOrders.data.orders) {
       // Update orders map with returned status
       if (!this.state.orders.get(order.orderStatus)?.has(order.orderHash)) {
-        this.state.orders.get(order.orderStatus)?.set(order.orderHash, {
-          order: DutchOrder.parse(order.encodedOrder, order.chainId),
-          signature: order.signature,
-        })
+        // Skip if already filled
+        if (!this.state.filledOrders.has(order.orderHash)) {
+          this.state.orders.get(order.orderStatus)?.set(order.orderHash, {
+            order: DutchOrder.parse(order.encodedOrder, order.chainId),
+            signature: order.signature,
+          })
+        }
       }
-      // // If not open, remove from open orders and pending orders
-      // if (order.orderStatus !== ORDER_STATUS.OPEN) {
-      //   this.state.orders.get(ORDER_STATUS.OPEN)?.delete(order.orderHash)
-      // }
-
-      // if (this.state.pendingOrders.has(order.orderHash)) {
-      //   this.state.pendingOrders.delete(order.orderHash)
-      // }
     }
   }
 
@@ -453,8 +469,8 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
       openOrders.entries()
     console.log(`Found ${openOrders?.size} open orders`)
     for (const [orderHash, order] of openOrderEntries) {
-      if (this.state.pendingOrders.has(orderHash)) {
-        console.log(`Skipping pending order: ${orderHash}`)
+      if (this.state.filledOrders.has(orderHash)) {
+        console.log(`Skipping filled order: ${orderHash}`)
         continue
       }
       try {
@@ -472,7 +488,7 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
           order.order.info.outputs
         )
         console.log(`Filling order: ${orderHash}`)
-        this.state.pendingOrders.add(orderHash)
+        this.state.filledOrders.add(orderHash)
         const fillTxHash = await this.fillOrder(
           bot.signer,
           order.order,

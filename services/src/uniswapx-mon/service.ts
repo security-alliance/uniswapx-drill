@@ -40,6 +40,7 @@ type Metrics = {
 
 type State = {
   lastTimestamp: number
+  openOrders: Set<string>
   violationDetected: boolean
 }
 
@@ -101,9 +102,11 @@ export class UniswapXMon extends BaseServiceV2<Options, Metrics, State> {
 
     // Default state is that violations have not been detected.
     this.state.violationDetected = false
+    this.state.openOrders = new Set()
   }
 
   private async getOrders(): Promise<UniswapXOrderEntity[]> {
+    this.logger.info(`Getting orders since ${this.state.lastTimestamp}`)
     let url = `${this.options.uniswapXServiceUrl}dutch-auction/orders?chainId=${this.options.testChainId}`
     if (this.state.lastTimestamp > 0) {
       url += `&sortKey=createdAt&sort=${encodeURIComponent(
@@ -115,6 +118,7 @@ export class UniswapXMon extends BaseServiceV2<Options, Metrics, State> {
         url
       )
       const orderEntities = orders.data.orders
+      this.logger.info(`Got ${orderEntities.length} orders`)
       return orderEntities
     } catch (err) {
       this.logger.info(`got unexpected API error`, {
@@ -128,6 +132,22 @@ export class UniswapXMon extends BaseServiceV2<Options, Metrics, State> {
       })
       return []
     }
+  }
+
+  private async getOrder(
+    orderHash: string
+  ): Promise<UniswapXOrderEntity | null> {
+    const orders = await axios.get<GetOrdersResponse<UniswapXOrderEntity>>(
+      `${this.options.uniswapXServiceUrl}dutch-auction/orders?orderHash=${orderHash}`
+    )
+    if (orders.data.orders.length === 0) {
+      this.logger.error(`Order ${orderHash} not found`)
+      return null
+    }
+    this.logger.info(
+      `Order ${orderHash} status: ${orders.data.orders[0].orderStatus}`
+    )
+    return orders.data.orders[0]
   }
 
   private async processOrder(order: UniswapXOrderEntity): Promise<void> {
@@ -157,6 +177,20 @@ export class UniswapXMon extends BaseServiceV2<Options, Metrics, State> {
 
     const reactorAddress = order.reactor
 
+    // Track open order hashes so we can get the future status
+    if (order.orderStatus === ORDER_STATUS.OPEN) {
+      if (!this.state.openOrders.has(order.orderHash)) {
+        this.state.openOrders.add(order.orderHash)
+      }
+      return
+    }
+
+    // If the order is not open, remove it from the open orders set
+    if (this.state.openOrders.has(order.orderHash)) {
+      this.state.openOrders.delete(order.orderHash)
+    }
+
+    // If the order is filled, check the settled amounts
     if (order.orderStatus === ORDER_STATUS.FILLED) {
       const settledOutput: Map<string, BigNumber> = new Map()
       order.settledAmounts.forEach((settledAmount) => {
@@ -247,11 +281,15 @@ export class UniswapXMon extends BaseServiceV2<Options, Metrics, State> {
           )
         }
       })
+      return
     }
   }
 
   private async processOrders(orders: UniswapXOrderEntity[]): Promise<void> {
     for (const order of orders) {
+      this.logger.info(
+        `Processing order ${order.orderHash} with status ${order.orderStatus}`
+      )
       this.metrics.orders.inc(
         { swapper: order.offerer, status: order.orderStatus },
         1
@@ -265,13 +303,40 @@ export class UniswapXMon extends BaseServiceV2<Options, Metrics, State> {
     }
   }
 
+  private async trackNewOrders(): Promise<void> {
+    const orders = await this.getOrders()
+    await this.processOrders(orders)
+  }
+
+  private async trackOpenOrders(): Promise<void> {
+    for (const orderHash of this.state.openOrders) {
+      const order = await this.getOrder(orderHash)
+      if (!order) {
+        this.logger.error(`Order ${orderHash} not found`)
+        continue
+      }
+      if (order.orderStatus !== ORDER_STATUS.OPEN) {
+        this.logger.info(
+          `Processing existing order ${orderHash} with status ${order.orderStatus}`
+        )
+        this.metrics.orders.inc(
+          { swapper: order.offerer, status: order.orderStatus },
+          1
+        )
+        await this.processOrder(order)
+      } else {
+        this.logger.info(`Order ${orderHash} is still open`)
+      }
+    }
+  }
+
   protected async main(): Promise<void> {
     console.log('Running main')
     // Get orders since last timestamp
     // For filled order
     // Get order amount & settled amount
-    const orders = await this.getOrders()
-    await this.processOrders(orders)
+    await this.trackOpenOrders()
+    await this.trackNewOrders()
   }
 }
 
