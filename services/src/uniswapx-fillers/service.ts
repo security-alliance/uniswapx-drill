@@ -19,6 +19,7 @@ import { ORDER_STATUS, UniswapXOrderEntity } from '../../lib/entities'
 import axios from 'axios'
 import { factories } from '@uniswap/uniswapx-sdk/dist/src/contracts/index'
 import {
+  ChainId,
   DAI,
   MAX_UINT96,
   PERMIT2,
@@ -41,14 +42,6 @@ type OrderExecution = {
   fillData: string
 }
 
-enum ChainId {
-  MAINNET = 1,
-  OPTIMISM = 10,
-  ARBITRUM_ONE = 42161,
-  POLYGON = 137,
-  SEPOLIA = 11155111,
-  GÖRLI = 5,
-}
 
 type Options = {
   l1RpcProvider: Provider
@@ -70,7 +63,6 @@ type Metrics = {
   faucetErc20Balance: Gauge
   balances: Gauge
   Erc20ABalances: Gauge
-  orders: Gauge
 }
 
 type Bot = {
@@ -193,11 +185,6 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
           desc: 'Balances of addresses',
           labels: ['address', 'nickname'],
         },
-        orders: {
-          type: Gauge,
-          desc: 'Number of orders',
-          labels: ['address', 'status'],
-        },
       },
     })
   }
@@ -296,6 +283,7 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
       await faucetEthTx.wait()
     }
 
+    // TODO faucet not triggering
     if (bot.Erc20BBalance < faucetERC20TxAmount) {
       console.log(
         `Filler signer ${bot.address} ERC20 balance: ${bot.Erc20BBalance} < ${faucetERC20TxAmount}`
@@ -310,36 +298,14 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
     }
   }
 
-  private async runReactorApprovals(
-    bot: Bot,
-    reactorAddress: string,
-    tokenAddress: string
-  ): Promise<void> {
-    console.log(
-      `Approving max ${tokenAddress} from ${bot.address} to ${reactorAddress}`
-    )
-    const approveTx = await bot.signer.sendTransaction(
-      await this.state.erc20TokenA.contract.populateTransaction.approve(
-        reactorAddress,
-        MAX_UINT256
-      )
-    )
-    await approveTx.wait()
-  }
 
   private async trackOrders(): Promise<void> {
     const orders = await axios.get<GetOrdersResponse<UniswapXOrderEntity>>(
-      `${this.options.uniswapXServiceUrl}dutch-auction/orders?chainId=${this.options.testChainId}`
+      `${this.options.uniswapXServiceUrl}dutch-auction/orders?chainId=${this.options.testChainId}&orderStatus=open`
     )
     console.log(`Tracking ${orders.data.orders.length} orders`)
     for (const order of orders.data.orders) {
-      console.log(
-        `Tracking order for ${order.offerer} with status ${order.orderStatus}`
-      )
-      this.metrics.orders.set(
-        { address: order.offerer, status: order.orderStatus },
-        1
-      )
+      
       // Update orders map with returned status
       if (!this.state.orders.get(order.orderStatus)?.has(order.orderHash)) {
         this.state.orders.get(order.orderStatus)?.set(order.orderHash, {
@@ -347,14 +313,14 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
           signature: order.signature,
         })
       }
-      // If not open, remove from open orders and pending orders
-      if (order.orderStatus !== ORDER_STATUS.OPEN) {
-        this.state.orders.get(ORDER_STATUS.OPEN)?.delete(order.orderHash)
-      }
+      // // If not open, remove from open orders and pending orders
+      // if (order.orderStatus !== ORDER_STATUS.OPEN) {
+      //   this.state.orders.get(ORDER_STATUS.OPEN)?.delete(order.orderHash)
+      // }
 
-      if (this.state.pendingOrders.has(order.orderHash)) {
-        this.state.pendingOrders.delete(order.orderHash)
-      }
+      // if (this.state.pendingOrders.has(order.orderHash)) {
+      //   this.state.pendingOrders.delete(order.orderHash)
+      // }
     }
   }
 
@@ -596,12 +562,12 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
       console.log('ETH Balance:', utils.formatEther(bot.EthBalance))
       await this.ensureMinimumBalances(bot)
 
-      if (
-        bot.EthBalance.gt(minimumBotBalance) &&
-        bot.Erc20BBalance.gt(minimumBotBalance)
-      ) {
-        await this.runErc20Transfers(bot)
-      }
+      // if (
+      //   bot.EthBalance.gt(minimumBotBalance) &&
+      //   bot.Erc20BBalance.gt(minimumBotBalance)
+      // ) {
+      //   await this.runErc20Transfers(bot)
+      // }
 
       await this.runFillOrders(bot)
 

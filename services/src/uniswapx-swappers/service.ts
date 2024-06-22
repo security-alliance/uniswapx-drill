@@ -20,16 +20,8 @@ import { version } from '../../package.json'
 
 import { Erc20TokenAbi } from '../../lib/abi/ERC20TokenAbi'
 import { GetOrdersResponse } from '../../lib/handlers/get-orders/schema/GetOrdersResponse'
-import { DAI, PERMIT2, USDC } from '../../lib/constants'
+import { ChainId, DAI, PERMIT2, USDC } from '../../lib/constants'
 
-enum ChainId {
-  MAINNET = 1,
-  OPTIMISM = 10,
-  ARBITRUM_ONE = 42161,
-  POLYGON = 137,
-  SEPOLIA = 11155111,
-  GÖRLI = 5,
-}
 
 type Options = {
   l1RpcProvider: Provider
@@ -52,7 +44,6 @@ type Metrics = {
   faucetErc20Balance: Gauge
   balances: Gauge
   Erc20ABalances: Gauge
-  orders: Gauge
 }
 
 type Bot = {
@@ -173,11 +164,6 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
           type: Gauge,
           desc: 'Balances of addresses',
           labels: ['address', 'nickname'],
-        },
-        orders: {
-          type: Gauge,
-          desc: 'Number of orders',
-          labels: ['address', 'status'],
         },
       },
     })

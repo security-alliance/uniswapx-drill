@@ -15,4 +15,12 @@ export const DAI = '0x6b175474e89094c44da98b954eedeac495271d0f' // DAI
 export const USDC = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'
 
 
+export enum ChainId {
+  MAINNET = 1,
+  OPTIMISM = 10,
+  ARBITRUM_ONE = 42161,
+  POLYGON = 137,
+  SEPOLIA = 11155111,
+  GÖRLI = 5,
+}
 
