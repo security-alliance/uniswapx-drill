@@ -255,7 +255,7 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
       await faucetEthTx.wait()
     }
 
-    if (bot.Erc20ABalance < faucetERC20TxAmount) {
+    if (bot.Erc20ABalance.lt(faucetERC20TxAmount)) {
       console.log(
         `L1 signer ${bot.address} ERC20 balance: ${bot.Erc20ABalance} < ${faucetERC20TxAmount}`
       )

@@ -283,8 +283,7 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
       await faucetEthTx.wait()
     }
 
-    // TODO faucet not triggering
-    if (bot.Erc20BBalance < faucetERC20TxAmount) {
+    if (bot.Erc20BBalance.lt(faucetERC20TxAmount)) {
       console.log(
         `Filler signer ${bot.address} ERC20 balance: ${bot.Erc20BBalance} < ${faucetERC20TxAmount}`
       )
@@ -295,6 +294,10 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
         )
       )
       await faucetERC20Tx.wait()
+    } else {
+      console.log(
+        `Filler signer ${bot.address} ERC20 balance: ${bot.Erc20BBalance} >= ${faucetERC20TxAmount}`
+      )
     }
   }
 
