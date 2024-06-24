@@ -36,6 +36,7 @@ type Options = {
   uniswapXServiceUrl: string
   defaultDeadlineSeconds: number
   reactorOverrideAddress: string | undefined
+  customReactorRate: number
 }
 
 type Metrics = {
@@ -139,6 +140,11 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
           validator: validators.str,
           default: '',
           desc: 'Reactor override address',
+        },
+        customReactorRate: {
+          validator: validators.num,
+          default: 50, // 50% of the time
+          desc: 'Custom reactor rate',
         },
       },
       metricsSpec: {
@@ -377,6 +383,15 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
     console.log(
       `Creating an order to swap ${utils.formatUnits(swapAmountIn, this.state.erc20TokenA.decimals)} ${this.state.erc20TokenA.contract.address} for ${utils.formatUnits(swapAmountOut, this.state.erc20TokenB.decimals)} ${this.state.erc20TokenB.contract.address} as bot ${bot.address}`
     )
+    
+    const useCustomReactor = Math.random() * 100 < this.options.customReactorRate
+    const reactorOverrideAddress = useCustomReactor ? this.options.reactorOverrideAddress : undefined
+    
+    if (useCustomReactor) {
+      console.log(`Using custom reactor: ${reactorOverrideAddress}`)
+    } else {
+      console.log(`Using default reactor`)
+    }
 
     const order = await this.buildOrder(
       bot,
@@ -385,7 +400,8 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
       deadline,
       this.state.erc20TokenA.contract.address,
       this.state.erc20TokenB.contract.address,
-      nonce
+      nonce,
+      reactorOverrideAddress
     )
     console.log(`Created order: ${JSON.stringify(order)}`)
     await this.submitOrder(order.payload)
@@ -398,7 +414,8 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
     deadlineSeconds: number,
     inputToken: string,
     outputToken: string,
-    nonce: BigNumber
+    nonce: BigNumber,
+    reactorOverrideAddress?: string,
     // filler?: string,
   ): Promise<{
     order: DutchOrder
@@ -406,11 +423,12 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
   }> {
     const deadline = Math.round(new Date().getTime() / 1000) + deadlineSeconds
     const decayStartTime = Math.round(new Date().getTime() / 1000)
-    const order = new DutchOrderBuilder(this.options.testChainId)
+    const order = new DutchOrderBuilder(this.options.testChainId, reactorOverrideAddress ? reactorOverrideAddress : undefined)
       .deadline(deadline)
       .decayEndTime(deadline)
       .decayStartTime(decayStartTime)
       .swapper(swapper.address)
+      
       // .exclusiveFiller(filler.address, BigNumber.from(100))
       .nonce(nonce)
       .input({
@@ -429,9 +447,9 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
       })
       .build()
       
-    if (this.options.reactorOverrideAddress !== '') {
-      order.info.reactor = this.options.reactorOverrideAddress
-    }
+    // if (this.options.reactorOverrideAddress !== '') {
+    //   order.info.reactor = this.options.reactorOverrideAddress
+    // }
 
     const { domain, types, values } = order.permitData()
     const signature = await swapper.signer._signTypedData(domain, types, values)
@@ -467,7 +485,7 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
         // TODO track metrics of failed orders
       }
     } catch (err: any) {
-      console.log(err.message)
+      this.logger.error(`Failed to submit order: ${err.message}`)
       throw err
     }
   }
@@ -491,12 +509,12 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
       console.log('Nonce:', bot.nonce.toHexString())
       await this.ensureMinimumBalances(bot)
 
-      if (
-        bot.EthBalance.gt(minimumBotBalance) &&
-        bot.Erc20ABalance.gt(minimumBotBalance)
-      ) {
-        await this.runErc20Transfers(bot)
-      }
+      // if (
+      //   bot.EthBalance.gt(minimumBotBalance) &&
+      //   bot.Erc20ABalance.gt(minimumBotBalance)
+      // ) {
+      //   await this.runErc20Transfers(bot)
+      // }
 
       const approval = await this.state.erc20TokenA.contract.allowance(
         bot.address,

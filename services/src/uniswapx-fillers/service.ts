@@ -487,7 +487,7 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
           reactorAddress,
           order.order.info.outputs
         )
-        console.log(`Filling order: ${orderHash}`)
+        console.log(`Filling order: ${orderHash} on reactor: ${reactorAddress}`)
         this.state.filledOrders.add(orderHash)
         const fillTxHash = await this.fillOrder(
           bot.signer,
@@ -514,7 +514,7 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
           signature,
         },
       ],
-      reactor: REACTOR_ADDRESS_MAPPING[this.options.testChainId]['Dutch']!,
+      reactor: order.info.reactor,
       // direct fill is 0x01
       fillContract: '0x0000000000000000000000000000000000000001',
       fillData: '0x',
