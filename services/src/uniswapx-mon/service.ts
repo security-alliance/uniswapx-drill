@@ -2,6 +2,7 @@ import {
   BaseServiceV2,
   StandardOptions,
   Gauge,
+  Histogram,
   Counter,
   validators,
 } from '@eth-optimism/common-ts'
@@ -22,20 +23,32 @@ import {
 import { GetOrdersResponse } from '../../lib/handlers/get-orders/schema/GetOrdersResponse'
 
 import { version } from '../../package.json'
-import { ChainId } from '../../lib/constants'
+import { ChainId, DAI, USDC } from '../../lib/constants'
 import { BigNumber } from 'ethers'
+
+// enum FilledSwapValues {
+//   MIN_IN = 'min_in',
+//   MAX_IN = 'max_in',
+//   MIN_OUT = 'min_out',
+//   MAX_OUT = 'max_out',
+//   SETTLED_IN = 'settled_in',
+//   SETTLED_OUT = 'settled_out',
+// }
 
 type Options = {
   rpc: Provider
   uniswapXServiceUrl: string
   startTimestamp: number
   testChainId: ChainId
+  customReactorAddress: string
+  defaultReactorAddress: string
 }
 
 type Metrics = {
   unexpectedApiErrors: Counter
   isDetectingViolations: Gauge
-  orders: Gauge
+  orders: Gauge // Orders by status and reactor
+  filledSwapValue: Histogram // output value / input value by reactor
 }
 
 type State = {
@@ -58,6 +71,16 @@ export class UniswapXMon extends BaseServiceV2<Options, Metrics, State> {
         rpc: {
           validator: validators.provider,
           desc: 'Provider for network',
+        },
+        customReactorAddress: {
+          validator: validators.str,
+          default: '0x86d160ddc49b18be0001948e7d81358c74af24aa',
+          desc: 'Custom reactor address',
+        },
+        defaultReactorAddress: {
+          validator: validators.str,
+          default: '0x6000da47483062a0d734ba3dc7576ce6a0b645c4',
+          desc: 'Default reactor address',
         },
         startTimestamp: {
           validator: validators.num,
@@ -91,18 +114,50 @@ export class UniswapXMon extends BaseServiceV2<Options, Metrics, State> {
         orders: {
           type: Gauge,
           desc: 'Number of orders',
-          labels: ['swapper', 'status'],
+          labels: ['status', 'reactor'],
+        },
+        filledSwapValue: {
+          type: Histogram,
+          desc: 'Filled swap value output/input by reactor',
+          labels: ['reactor'],
         },
       },
     })
   }
 
   protected async init(): Promise<void> {
+    console.log(`Starting UniswapX monitor`)
     this.state.lastTimestamp = this.options.startTimestamp
 
     // Default state is that violations have not been detected.
     this.state.violationDetected = false
     this.state.openOrders = new Set()
+
+    const reactorAddresses = [
+      this.options.defaultReactorAddress,
+      this.options.customReactorAddress,
+    ]
+
+    // Ensure reactor addresses are valid and not undefined
+    if (
+      !reactorAddresses.every(
+        (address) => typeof address === 'string' && address
+      )
+    ) {
+      this.logger.error('Invalid reactor addresses', { reactorAddresses })
+      throw new Error(
+        'Reactor addresses are invalid or not properly configured.'
+      )
+    }
+
+    reactorAddresses.forEach((reactorAddress) => {
+      Object.values(ORDER_STATUS).forEach((status) => {
+        this.metrics.orders.set({ status, reactor: reactorAddress }, 0)
+      })
+    })
+    // reactorAddresses.forEach((reactorAddress) => {
+    //   this.metrics.filledSwapValue.set({ reactor: reactorAddress }, 0)
+    // })
   }
 
   private async getOrders(): Promise<UniswapXOrderEntity[]> {
@@ -118,7 +173,7 @@ export class UniswapXMon extends BaseServiceV2<Options, Metrics, State> {
         url
       )
       const orderEntities = orders.data.orders
-      this.logger.info(`Got ${orderEntities.length} orders`)
+      this.logger.info(`Got ${orderEntities.length} new orders`)
       return orderEntities
     } catch (err) {
       this.logger.info(`got unexpected API error`, {
@@ -150,8 +205,34 @@ export class UniswapXMon extends BaseServiceV2<Options, Metrics, State> {
     return orders.data.orders[0]
   }
 
+  private calculateTokenValue(token: string, amount: BigNumber): number {
+    let value = 0
+
+    switch (token.toLowerCase()) {
+      case USDC.toLowerCase():
+        value = amount.div(BigNumber.from(10).pow(6)).toNumber()
+        break
+      case DAI.toLowerCase():
+        value = amount.div(BigNumber.from(10).pow(18)).toNumber()
+        break
+      default:
+        this.logger.error(`Unknown token ${token}`)
+    }
+    return value
+  }
+
   private async processOrder(order: UniswapXOrderEntity): Promise<void> {
     const dutchOrder = DutchOrder.parse(order.encodedOrder, order.chainId)
+
+    const reactorAddress = dutchOrder.info.reactor
+
+    // Track status if not open
+    if (order.orderStatus !== ORDER_STATUS.OPEN) {
+      this.metrics.orders.inc(
+        { status: order.orderStatus, reactor: reactorAddress },
+        1
+      )
+    }
     const expectedInput: DutchInput = dutchOrder.info.input
     const expectedOutput: Map<
       string,
@@ -175,8 +256,6 @@ export class UniswapXMon extends BaseServiceV2<Options, Metrics, State> {
       })
     })
 
-    const reactorAddress = order.reactor
-
     // Track open order hashes so we can get the future status
     if (order.orderStatus === ORDER_STATUS.OPEN) {
       if (!this.state.openOrders.has(order.orderHash)) {
@@ -193,10 +272,13 @@ export class UniswapXMon extends BaseServiceV2<Options, Metrics, State> {
     // If the order is filled, check the settled amounts
     if (order.orderStatus === ORDER_STATUS.FILLED) {
       const settledOutput: Map<string, BigNumber> = new Map()
+      let settledAmountIn = BigNumber.from(0)
+      let tokenIn: string
       order.settledAmounts.forEach((settledAmount) => {
+        tokenIn = settledAmount.tokenIn
         const token = settledAmount.tokenOut
         const settledAmountOut = BigNumber.from(settledAmount.amountOut)
-        const settledAmountIn = BigNumber.from(settledAmount.amountIn)
+        settledAmountIn = BigNumber.from(settledAmount.amountIn)
 
         // Validate input is between start and end amount
         if (settledAmountIn.lt(expectedInput.startAmount)) {
@@ -281,19 +363,74 @@ export class UniswapXMon extends BaseServiceV2<Options, Metrics, State> {
           )
         }
       })
+
+      // Track filled swap values
+      // const expectedInputMinValue = await this.calculateTokenValue(
+      //   expectedInput.token,
+      //   expectedInput.startAmount
+      // )
+      // const expectedInputMaxValue = await this.calculateTokenValue(
+      //   expectedInput.token,
+      //   expectedInput.endAmount
+      // )
+
+      // let expectedOutputMinValue = 0
+      // let expectedOutputMaxValue = 0
+      // expectedOutput.forEach((output, token) => {
+      //   expectedOutputMinValue += this.calculateTokenValue(
+      //     token,
+      //     output.startAmount
+      //   )
+      //   expectedOutputMaxValue += this.calculateTokenValue(
+      //     token,
+      //     output.endAmount
+      //   )
+      // })
+
+      const settledInputValue = this.calculateTokenValue(
+        tokenIn,
+        settledAmountIn
+      )
+
+      let settledOutputValue = 0
+      settledOutput.forEach((settledAmount, token) => {
+        settledOutputValue += this.calculateTokenValue(token, settledAmount)
+      })
+      this.logger.info(
+        `Filled swap input and output values for order ${order.orderHash} on ${reactorAddress}`,
+        {
+          settledInputValue,
+          settledOutputValue,
+        }
+      )
+
+      if (settledInputValue > 0) {
+        const swapValue = settledOutputValue / settledInputValue
+        this.logger.info(
+          `Filled swap value for order ${order.orderHash} on ${reactorAddress}`,
+          {
+            swapValue,
+          }
+        )
+        this.metrics.filledSwapValue.observe(
+          { reactor: reactorAddress },
+          swapValue
+        )
+      } else {
+        this.logger.error(`Invalid settled input value`, {
+          settledInputValue,
+        })
+      }
+
       return
     }
   }
 
   private async processOrders(orders: UniswapXOrderEntity[]): Promise<void> {
     for (const order of orders) {
-      this.logger.info(
-        `Processing order ${order.orderHash} with status ${order.orderStatus}`
-      )
-      this.metrics.orders.inc(
-        { swapper: order.offerer, status: order.orderStatus },
-        1
-      )
+      // this.logger.info(
+      //   `Processing order ${order.orderHash} with status ${order.orderStatus}`
+      // )
       await this.processOrder(order)
 
       // Update last timestamp
@@ -305,6 +442,30 @@ export class UniswapXMon extends BaseServiceV2<Options, Metrics, State> {
 
   private async trackNewOrders(): Promise<void> {
     const orders = await this.getOrders()
+
+    // Set open orders amount
+    const openOrders = orders.filter(
+      (order) => order.orderStatus === ORDER_STATUS.OPEN
+    )
+    const defaultReactorOpenOrders = openOrders.filter(
+      (order) =>
+        order.reactor.toLowerCase() ===
+        this.options.defaultReactorAddress.toLowerCase()
+    )
+    const customReactorOpenOrders = openOrders.filter(
+      (order) =>
+        order.reactor.toLowerCase() ===
+        this.options.customReactorAddress.toLowerCase()
+    )
+    this.metrics.orders.set(
+      { status: 'open', reactor: this.options.defaultReactorAddress },
+      defaultReactorOpenOrders.length
+    )
+    this.metrics.orders.set(
+      { status: 'open', reactor: this.options.customReactorAddress },
+      customReactorOpenOrders.length
+    )
+
     await this.processOrders(orders)
   }
 
@@ -316,22 +477,19 @@ export class UniswapXMon extends BaseServiceV2<Options, Metrics, State> {
         continue
       }
       if (order.orderStatus !== ORDER_STATUS.OPEN) {
-        this.logger.info(
-          `Processing existing order ${orderHash} with status ${order.orderStatus}`
-        )
-        this.metrics.orders.inc(
-          { swapper: order.offerer, status: order.orderStatus },
-          1
-        )
+        // this.logger.info(
+        //   `Processing existing order ${orderHash} with status ${order.orderStatus}`
+        // )
         await this.processOrder(order)
-      } else {
-        this.logger.info(`Order ${orderHash} is still open`)
       }
+      // else {
+      //   this.logger.info(`Order ${orderHash} is still open`)
+      // }
     }
   }
 
   protected async main(): Promise<void> {
-    console.log('Running main')
+    console.log(`Running UniswapX monitor main`)
     // Get orders since last timestamp
     // For filled order
     // Get order amount & settled amount

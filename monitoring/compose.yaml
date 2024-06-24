@@ -30,16 +30,16 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=grafana
     volumes:
       - ./grafana:/etc/grafana/provisioning/datasources
-  mon:
+  uniswapx-mon:
     build:
-      context: ../
+      context: ../services
       target: mon
-      dockerfile: services/docker/Dockerfile.packages
+      dockerfile: Dockerfile.packages
     # platform: linux/amd64
     restart: always
-    container_name: 'balance-mon'
+    container_name: 'uniswapx-mon'
     ports:
-      - 7300:7300
+      - 7402:7402
     env_file:
       - ../services/.env
 volumes:

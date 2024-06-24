@@ -30,4 +30,4 @@ scrape_configs:
     scheme: http
     static_configs:
       - targets:
-          - mon:7300
+          - uniswapx-mon:7402
