@@ -442,9 +442,14 @@ export class UniswapXMon extends BaseServiceV2<Options, Metrics, State> {
 
   private async trackNewOrders(): Promise<void> {
     const orders = await this.getOrders()
+    const ordersWithReactor = orders.map((order) => ({
+      ...order,
+      reactor: DutchOrder.parse(order.encodedOrder, order.chainId).info.reactor,
+    }))
+
 
     // Set open orders amount
-    const openOrders = orders.filter(
+    const openOrders = ordersWithReactor.filter(
       (order) => order.orderStatus === ORDER_STATUS.OPEN
     )
     const defaultReactorOpenOrders = openOrders.filter(
