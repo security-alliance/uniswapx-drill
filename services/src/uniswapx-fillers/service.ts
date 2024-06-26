@@ -124,7 +124,7 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
         },
         sleepTimeMs: {
           validator: validators.num,
-          default: 15000,
+          default: 2000,
           desc: 'Time in ms to sleep when waiting for a node',
           public: true,
         },
@@ -140,7 +140,7 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
         },
         faucetErc20TxAmount: {
           validator: validators.str,
-          default: '500',
+          default: '15000',
           desc: 'Amount of ERC20 to request from the faucet',
         },
         testChainId: {
@@ -473,6 +473,15 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
         console.log(`Skipping filled order: ${orderHash}`)
         continue
       }
+      const orderDeadline = order.order.info.deadline
+      const currentTimestamp = Math.floor(Date.now() / 1000) + 10 // add buffer
+      if (currentTimestamp > orderDeadline) {
+        console.log(
+          `Skipping order: ${orderHash} because it is expired - deadline: ${orderDeadline} currentTimestamp: ${currentTimestamp}`
+        )
+        this.state.orders.get(ORDER_STATUS.OPEN)?.delete(orderHash)
+        continue
+      }
       try {
         const canFill = await this.canFill(bot, order.order.info.outputs)
         if (!canFill) {
@@ -566,9 +575,9 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
     const minimumBotBalance = utils.parseEther(this.options.minimumBotBalance)
 
     await this.trackFaucetBalances()
-    await this.trackOrders()
 
     for (const bot of this.state.bots) {
+      await this.trackOrders()
       await this.trackBotBalances(bot)
       console.log('Bot: ', bot.nickname)
       console.log('----------------------------------------------------')

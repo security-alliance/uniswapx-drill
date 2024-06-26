@@ -118,7 +118,7 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
         },
         faucetErc20TxAmount: {
           validator: validators.str,
-          default: '100',
+          default: '15000',
           desc: 'Amount of ERC20 to request from the faucet',
         },
         testChainId: {
@@ -133,7 +133,7 @@ export class ERC20Bot extends BaseServiceV2<Options, Metrics, State> {
         },
         defaultDeadlineSeconds: {
           validator: validators.num,
-          default: 48,
+          default: 100,
           desc: 'Default deadline in seconds',
         },
         reactorOverrideAddress: {
